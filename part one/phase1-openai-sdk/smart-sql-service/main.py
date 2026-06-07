@@ -850,6 +850,8 @@ chat_service.execute_write_sql = execute_write_sql
 chat_service.SYSTEM_PROMPT = SYSTEM_PROMPT
 chat_service.EXECUTE_SQL_TOOL = EXECUTE_SQL_TOOL
 chat_service.EXECUTE_WRITE_SQL_TOOL = EXECUTE_WRITE_SQL_TOOL
+chat_service.DB_URL = f"sqlite:///{Path(__file__).parent / 'sessions.db'}"
+chat_service.CHROMA_PATH = str(Path(__file__).parent / "chroma_db")
 
 
 @app.post("/api/chat/session")

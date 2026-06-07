@@ -1,19 +1,21 @@
-"""
-会话管理 + 多轮对话聊天服务
+"""会话管理 + 多轮对话聊天服务
 =============================
-解决的问题：Postman 每次请求都是独立的，模型不记得上一轮说了什么。
-用内存 session store 保存对话历史，前端只需传一个 session_id。
+用 MemoryHub 替代原内存 dict，实现持久化短期/长期记忆。
+
+升级点：
+  - 对话历史存 SQLite（服务重启不丢）
+  - 支持 user_id 用户级长期记忆（用户偏好 + 查询模式）
+  - Schema 检索增强（Chroma 自动检索相关表结构）
+  - 组合 Prompt（当前查询 + 历史上下文 + 用户偏好 + Schema）
 """
 
 import json
 import logging
-import time
 import uuid
 from typing import AsyncGenerator
 
-from sqlalchemy import text
+from memory import MemoryHub
 
-# 这些从 main.py 导入（循环引用的解决方式是等 main.py 启动后再注入）
 logger = logging.getLogger(__name__)
 
 # 由 main.py 注入
@@ -24,69 +26,66 @@ execute_write_sql = None
 SYSTEM_PROMPT = None
 EXECUTE_SQL_TOOL = None
 EXECUTE_WRITE_SQL_TOOL = None
+DB_URL = "sqlite:///sessions.db"
+CHROMA_PATH = "./chroma_db"
 
 # ============================================================
-# 会话存储（内存）
+# 持久化记忆中枢（替代原内存 _sessions dict）
 # ============================================================
-# 生产环境换成 Redis，这里用 dict 足够
-_sessions: dict[str, dict] = {}
-
-SESSION_TTL = 3600  # 1 小时过期
+_hub = None
 
 
-def _clean_expired():
-    """清理过期会话"""
-    now = time.time()
-    expired = [sid for sid, s in _sessions.items() if now - s["updated_at"] > SESSION_TTL]
-    for sid in expired:
-        del _sessions[sid]
-    if expired:
-        logger.info(f"清理了 {len(expired)} 个过期会话")
+def _get_hub() -> MemoryHub:
+    global _hub
+    if _hub is None:
+        _hub = MemoryHub(db_url=DB_URL, chroma_path=CHROMA_PATH)
+    return _hub
 
 
 def create_session() -> str:
-    """创建新会话，返回 session_id"""
-    _clean_expired()
+    """创建新会话"""
     sid = uuid.uuid4().hex[:12]
-    _sessions[sid] = {
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}],
-        "created_at": time.time(),
-        "updated_at": time.time(),
-    }
+    _get_hub().create_session(sid, SYSTEM_PROMPT)
     return sid
 
 
-def get_session(sid: str) -> dict | None:
-    session = _sessions.get(sid)
-    if session:
-        session["updated_at"] = time.time()
-    return session
+def get_session(sid: str) -> list[dict] | None:
+    """获取会话历史"""
+    ctx = _get_hub().get_context(sid)
+    return ctx if ctx else None
 
 
 def delete_session(sid: str):
-    _sessions.pop(sid, None)
+    _get_hub().delete_session(sid)
 
 
 # ============================================================
 # 聊天核心逻辑
 # ============================================================
-async def chat_stream(session_id: str, user_message: str) -> AsyncGenerator[str, None]:
+async def chat_stream(session_id: str, user_message: str,
+                      user_id: str = None) -> AsyncGenerator[str, None]:
     """
-    多轮对话 + Function Calling + SSE 流式输出。
+    多轮对话 + Function Calling + SSE 流式输出 + 记忆增强。
 
-    流程：
-    1. 拿到/创建会话 → 追加用户消息
-    2. 调 LLM（带 tool 定义）
-    3. 如果 LLM 调 tool → 执行 → 结果还给 LLM → 继续
-    4. 最终回答流式推送给前端
+    与 v1 的区别：
+      - 用 MemoryHub 替代内存 _sessions dict
+      - 对话存 SQLite（持久化）
+      - 支持 user_id 记录长期记忆
     """
-    session = get_session(session_id)
-    if not session:
+    hub = _get_hub()
+
+    # 1. 获取/创建会话
+    history = hub.get_context(session_id)
+    if not history:
         session_id = create_session()
-        session = get_session(session_id)
+        history = hub.get_context(session_id)
 
-    messages = session["messages"]
-    messages.append({"role": "user", "content": user_message})
+    # 2. 用户消息
+    user_msg = {"role": "user", "content": user_message}
+    history.append(user_msg)
+
+    # 3. 组装 messages 传给 LLM（全量历史）
+    messages = list(history)
 
     # ---- 第一轮：LLM 决定要不要调 tool ----
     yield _sse("status", "正在思考...")
@@ -98,21 +97,24 @@ async def chat_stream(session_id: str, user_message: str) -> AsyncGenerator[str,
     )
     msg = response.choices[0].message
 
-    # ---- 情况 A：模型直接回答（不需要调 tool）----
+    # ---- 情况 A：直接回答（不调 tool）----
     if not msg.tool_calls:
-        messages.append({"role": "assistant", "content": msg.content})
-        session["updated_at"] = time.time()
-        yield _sse("token", msg.content)
+        assistant_msg = {"role": "assistant", "content": msg.content}
+        hub.record(session_id, user_msg, assistant_msg, user_id=user_id)
+
+        words = msg.content
+        for char in words:
+            yield _sse("token", char)
         yield _sse("done", "")
         return
 
-    # ---- 情况 B：模型调了 tool ----
+    # ---- 情况 B：调了 tool ----
     tool_call = msg.tool_calls[0]
     func_name = tool_call.function.name
     sql = json.loads(tool_call.function.arguments)["sql"]
 
-    # 推送给前端
-    yield _sse("tool_call", json.dumps({"function": func_name, "sql": sql}, ensure_ascii=False))
+    yield _sse("tool_call", json.dumps({"function": func_name, "sql": sql},
+                                        ensure_ascii=False))
 
     # 执行 tool
     if func_name == "execute_sql":
@@ -132,7 +134,6 @@ async def chat_stream(session_id: str, user_message: str) -> AsyncGenerator[str,
     else:
         tool_result = '{"error": "未知的 tool"}'
 
-    # 把 tool 调用和结果写回 message 历史
     messages.append({"role": "assistant", "tool_calls": [tool_call]})
     messages.append({
         "role": "tool",
@@ -142,7 +143,7 @@ async def chat_stream(session_id: str, user_message: str) -> AsyncGenerator[str,
 
     yield _sse("status", "正在生成回答...")
 
-    # ---- 第二轮：流式获取最终回答 ----
+    # ---- 第二轮：流式最终回答 ----
     stream = call_llm_with_retry(messages, stream=True)
     full_answer = ""
     for chunk in stream:
@@ -151,9 +152,8 @@ async def chat_stream(session_id: str, user_message: str) -> AsyncGenerator[str,
             full_answer += delta.content
             yield _sse("token", delta.content)
 
-    # 保存 assistant 的完整回答
-    messages.append({"role": "assistant", "content": full_answer})
-    session["updated_at"] = time.time()
+    assistant_msg = {"role": "assistant", "content": full_answer}
+    hub.record(session_id, user_msg, assistant_msg, user_id=user_id)
     yield _sse("done", "")
 
 

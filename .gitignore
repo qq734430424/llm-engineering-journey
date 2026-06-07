@@ -20,3 +20,24 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+win_actor.py
+part one/phase1-openai-sdk/smart-sql-service/demo.db
+part one/phase1-openai-sdk/smart-sql-service/sessions.db
+part one/phase1-openai-sdk/smart-sql-service/demo.db
+part one/phase1-openai-sdk/smart-sql-service/记忆系统升级方案.md
+part one/phase2-rag/chroma_db/chroma.sqlite3
+part one/phase2-rag/chroma_db/df704e97-6e21-40fc-b783-9559af876db4/data_level0.bin
+part one/phase2-rag/chroma_db/df704e97-6e21-40fc-b783-9559af876db4/header.bin
+part one/phase2-rag/chroma_db/df704e97-6e21-40fc-b783-9559af876db4/length.bin
+part one/phase2-rag/chroma_db/df704e97-6e21-40fc-b783-9559af876db4/link_lists.bin
+part one/phase2-rag/milvus_demo.db/LOCK
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge/manifest.json
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge/manifest.json.prev
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge/schema.json
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge/partitions/_default/data/data_000001_000014.parquet
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge/wal/wal_data_000001.arrow
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge_130753/manifest.json
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge_130753/manifest.json.prev
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge_130753/schema.json
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge_130753/partitions/_default/data/data_000001_000014.parquet
+part one/phase2-rag/milvus_demo.db/collections/tech_knowledge_130753/wal/wal_data_000001.arrow
